@@ -60,7 +60,15 @@ should be approved by the remaining approvers and/or the owning SIG (or
 SIG Architecture for cross-cutting KEPs).
 -->
 # KEP-20201010: rework kube-proxy architecture
+# UPDATE
 
+As of 4/16/2022
+- the KPNG subproject has a working implementation of much of this proposal: https://github.com/kubernetes-sigs/kpng
+- this implementation includes windows, ipvs, iptables, nft, and userspace based linux proxies
+  - third parties have also published external KPNG backends validating this implementation, such as https://kubernetes.io/blog/2021/10/18/use-kpng-to-write-specialized-kube-proxiers/ 
+- the KPNG project meetings are published at https://github.com/kubernetes/community/tree/master/sig-network 
+- For the backends implemented we have conformance and sig-network tests which run, which are in generally good health with exceptions of a few corner cases and bugs which are being actively worked on by the community
+- The status of this KEP hasnt been 100% maintained because our efforts have diverted to getting a concrete prototype working, we encourage others to help us complete this KEP as well as to finish the other broad work associated with rearchitecting the kube-proxy  
 <!--
 A table of contents is helpful for quickly jumping to sections of a KEP and for
 highlighting any additional information provided beyond the standard KEP
