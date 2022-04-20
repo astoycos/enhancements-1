@@ -156,7 +156,7 @@ to other goals (Calico to manage the network overlay, Cilium to manage app-level
 to provide an external LB for bare-metal clusters, etc).
 
 Along this cambrian explosion of third-party software, the Service object itself received new
-concepts to improve the abstraction, for instance to express topology. This, third-party
+concepts to improve the abstraction, for instance to express topology. Thus, third-party
 implementation are expected to update and become more complex over time, even if their core doesn't
 change (ie, the eBPF translation layer is not affected).
 
