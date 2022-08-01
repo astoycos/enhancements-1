@@ -230,6 +230,44 @@ This decoupling allows kube-proxy and implementation to evolve in their own time
 instance, introducing optimizations like EndpointSlice or new business semantics like Topology
 does not trigger a rebuild/release of any proxy implementation.
 
+In this implementation, we either: 
+- send the *full state*  of the kubernetes networking state-space to a client, every time anything needs to change.  Since this is done over GRPC or in memory, the bandwidth costs are low (anecdotally this has been measured, and it works for 1000s of serviecs and pods - we can attach specific results to this KEP as needed).  An example of this can be seen in the ebpf and nft proxies in the KPNG project (https://github.com/kubernetes-sigs/kpng/blob/master/backends/nft/nft.go).
+```
+// the entire statestpace of the Kubernetes networking model is embedded in this struct
+func Callback(ch <-chan *client.ServiceEndpoints) {
+	svcCount := 0
+	epCount := 0
+```
+- This implementation leverages a "DiffStore", which allows arbitrary, generic go objects to be diffed in memory by a backend.  This can be viewed at https://github.com/kubernetes-sigs/kpng/tree/master/client/diffstore.    The overall usage of this store is relatively intuitive: Write to it continuously, and only register "differneces" when looking at the Diffs.  The "Reset()" function causes the second "wave" in a series of writes to take place, such that a subsequent call to see the diff at a later time will reveal differences between the first and second series of writes.  Note that the `Get` call here will write a key if empty.
+
+```
+func ExampleStore() {
+	store := NewBufferStore[string]()
+	{
+		fmt.Fprint(store.Get("a"), "hello a")
+		store.Done()
+		store.printDiff()
+	}
+	{
+		store.Reset()
+		fmt.Fprint(store.Get("a"), "hello a")
+		store.Done()
+		store.printDiff()
+	}
+```
+The entire unit test for the diffstore which is used to cache and update the network state space on the backend side, is shown in the above `/diffstore/diffstore_test.go` file. 
+
+- Alternatively, we allow backend clients to implement "SetService" and "SetEndpoint" methods, which allow them to use a similar API structure to that of upstream Kubernetes current kernelspace Kube proxy.  An example of this is in how KPNG currently implements the iptables proxy (https://github.com/kubernetes-sigs/kpng/blob/master/backends/iptables/sink.go).
+
+```
+func (s *Backend) SetService(svc *localnetv1.Service) {
+	for _, impl := range IptablesImpl {
+		impl.serviceChanges.Update(svc)
+	}
+}
+// similar functions for DeleteService, DeleteEndpoint, and so on... which are all mimicking the upstream kube proxy for parity
+// since iptables is such a universal kubernetes proxying implementation
+```
 The idea is to send the full state to the client, so implementations don't have to do
 diff-processing and maintain any internal state. This should provide simple implementations,
 reliable results and still be quite optimal, since many kernel network-level objects are
