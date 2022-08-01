@@ -194,19 +194,11 @@ demonstrate the interest in a KEP within the wider Kubernetes community.
 - (optional) help proxy implementations using the same subsystem (ie iptables) to cooperate more
   easily
 
-<!--
-List the specific goals of the KEP. What is it trying to achieve? How will we
-know that this has succeeded?
--->
-
 ### Non-Goals
 
-- provide equivalent implementations of third-party ones
-
-<!--
-What is out of scope for this KEP? Listing non-goals helps to focus discussion
-and make progress.
--->
+- provide equivalent implementations of all third-party proxiers
+- force new users to run kpng in two separate daemons - this has performance benefits and is optional
+- force all proxiers to use the fullstate model: this is ideal for new implementations (easier to understand, no magic caches) but its not necessary.
 
 ## Proposal
 
