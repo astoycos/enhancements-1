@@ -326,31 +326,28 @@ proposal will be implemented, this is the place to discuss them.
 
 A [draft implementation] exists and some [performance testing] has been done.
 
-[draft implementation]: https://github.com/mcluseau/kube-proxy2/
+[draft implementation]: https://github.com/kubernetes-sigs/kpng/
 [performance testing]: https://github.com/mcluseau/kube-proxy2/blob/master/doc/proposal.md
 
 The watchable API will be a long polling, taking a "last known state info" and returning a stream of
-objects. Proposed definition:
+objects. 
 
-```proto
-service Endpoints {
-    // Returns all the endpoints for this node.
-    rpc Next (NextFilter) returns (stream NextItem);
-}
+Proposed definition is found here: https://github.com/kubernetes-sigs/kpng/blob/master/api/localnetv1/services.proto
 
-message NextFilter {
-    // Unique instance ID to manage proxy restarts
-    uint64 InstanceID = 1;
-    // The latest revision we're aware of (0 at first)
-    uint64 Rev = 2;
-}
-
-message NextItem {
-    // Filter to use to get the next notification (first item in stream)
-    NextFilter Next = 1;
-    // A service endpoints item (any item after the first)
-    ServiceEndpoints Endpoints = 2;
-}
+The main types are:
+```
+message Service
+message IPFilter
+message ServiceIPs
+message Endpoint
+message IPSet
+message Port
+message ClientIPAffinity
+message ServiceInfo
+message EndpointInfo
+message EndpointConditions
+message NodeInfo
+message Node
 ```
 
 When the proxy starts, it will generate a random InstanceID, and have Rev at 0. So, a client
