@@ -990,11 +990,13 @@ Why should this KEP _not_ be implemented?
 
 ## Alternatives
 
-<!--
-What other approaches did you consider, and why did you rule them out? These do
-not need to be as detailed as the proposal, but should include enough
-information to express the idea and why it was not acceptable.
--->
+*Having an all in one library to help people make kube proxys which are packaged outside of K/K* 
+
+This solution would make it easier to build proxies without actually packaging an end to end solution.  It would however have the setback of *only* being a library, and also, it would force third parties to entirely implement caching solutions.  Finally, it would provide no usability at all to the fully generic "my backend is not in golang" use case, i.e. if someone made a C or java or python backend, they can use KPNG's "brain" as a separate process.  All-in-all, a client library that eases the burden of making proxies is an alternative to this approach but, it would throw away alot of the functionality, modularity, and the "marketplace" aspect of separate backends evolving rapidly with regard to a stable core KPNG "brain".
+
+*Not re writing the kube-proxy and let it live on in pkg/ with new backends emerging over time* 
+
+Because of configuration challenges, community growth challenges in the existing kube-proxy, we'd assert that the modular and easy to evolve/maintain model here is superior to a monolith in-tree.  We cite particularly the eBPF and Windows kube proxy user stories as "home run" scenarios for KPNG, because windows benefits from it's own approaches, and it shouldnt clutter the core K8s codebase, and similarly, eBPF is a bit of a niche' approach which shouldnt live in the Kubernetes core codebase.
 
 ## Infrastructure Needed (Optional)
 
