@@ -191,8 +191,7 @@ demonstrate the interest in a KEP within the wider Kubernetes community.
   logic changes
 - provide a client library with minimal dependencies
 - include equivalent implementations of in-project ones (userland, iptables and ipvs)
-- (optional) help proxy implementations using the same subsystem (ie iptables) to cooperate more
-  easily
+- create reusable library elements for some proxy logic, such as conntrack cleaning, which might be called from different proxy implementations
 
 ### Non-Goals
 
