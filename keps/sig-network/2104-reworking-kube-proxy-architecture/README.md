@@ -403,7 +403,7 @@ When the proxy starts, it will generate a random InstanceID, and have Rev at 0. 
 The proxy will never send a partial state, only full states. This means it waits to have all its
 Kubernetes watchers sync'ed before going to Rev 1.
 
-The first NextItem in the stream will be the state info required for the next polling call, and any
+The first OpItem in the stream will be the state info required for the next polling call, and any
 subsequent item will be an actual state object. The stream is closed when the full state has been
 sent.
 
@@ -453,67 +453,126 @@ type EndpointsClient struct {
 
 	// Has unexported fields.
 }
-    EndpointsClient is a simple client to kube-proxy's Endpoints API.
 
-func New(flags FlagSet) (epc *EndpointsClient)
-    New returns a new EndpointsClient with values bound to the given flag-set
-    for command-line tools. Other needs can use `&EndpointsClient{...}`
-    directly.
 
-func (epc *EndpointsClient) Cancel()
-    Cancel will cancel this client, quickly closing any call to Next.
+// DefaultFlags registers this client's values to the standard flags.
+func (epc *EndpointsClient) DefaultFlags(flags FlagSet) {
+	flags.StringVar(&epc.Target, "api", "127.0.0.1:12090", "API to reach (can use multi:///1.0.0.1:1234,1.0.0.2:1234)")
 
-func (epc *EndpointsClient) CancelOn(signals ...os.Signal)
-    CancelOn make the given signals to cancel this client.
+	flags.DurationVar(&epc.ErrorDelay, "error-delay", 1*time.Second, "duration to wait before retrying after errors")
 
-func (epc *EndpointsClient) CancelOnSignals()
-    CancelOnSignals make the default termination signals to cancel this client.
+	flags.IntVar(&epc.MaxMsgSize, "max-msg-size", 4<<20, "max gRPC message size")
 
-func (epc *EndpointsClient) DefaultFlags(flags FlagSet)
-    DefaultFlags registers this client's values to the standard flags.
+	epc.TLS.Bind(flags, "")
+}
 
-func (epc *EndpointsClient) Next() (items []*localnetv1.ServiceEndpoints, canceled bool)
-    Next returns the next set of ServiceEndpoints, waiting for a new revision as
-    needed. It's designed to never fail and will always return latest items,
-    unless canceled.
-```
+// Next sends the next diff to the sink, waiting for a new revision as needed.
+// It's designed to never fail, unless canceled.
+func (epc *EndpointsClient) Next() (canceled bool) {
+	if epc.watch == nil {
+		epc.dial()
+	}
 
-A good example of how to use this low level API is the `client.Run` itself:
+retry:
+	if epc.ctx.Err() != nil {
+		canceled = true
+		return
+	}
 
-```golang
-// Run the client with the standard options
-func Run(handlers ...HandlerFunc) {
-	once := flag.Bool("once", false, "only one fetch loop")
+	// say we're ready
+	nodeName, err := epc.Sink.WaitRequest()
+	if err != nil { // errors are considered as cancel
+		canceled = true
+		return
+	}
 
-	epc := New(flag.CommandLine)
-
-	flag.Parse()
-
-	epc.CancelOnSignals()
+	err = epc.watch.Send(&localnetv1.WatchReq{
+		NodeName: nodeName,
+	})
+	if err != nil {
+		epc.postError()
+		goto retry
+	}
 
 	for {
-		items, canceled := epc.Next()
+		op, err := epc.watch.Recv()
 
-		if canceled {
-			return
+		if err != nil {
+			// klog.Error("watch recv failed: ", err)
+			epc.postError()
+			goto retry
 		}
 
-		for _, handler := range handlers {
-			handler(items)
-		}
+		// pass the op to the sync
+		epc.Sink.Send(op)
 
-		if *once {
-			klog.Infof("to resume this watch, use --instance-id %d --rev %d", epc.InstanceID, epc.Rev)
+		// break on sync
+		switch v := op.Op; v.(type) {
+		case *localnetv1.OpItem_Sync:
 			return
 		}
 	}
 }
+
+// Cancel will cancel this client, quickly closing any call to Next.
+func (epc *EndpointsClient) Cancel() {
+	epc.cancel()
+}
+
+// CancelOnSignals make the default termination signals to cancel this client.
+func (epc *EndpointsClient) CancelOnSignals() {
+	epc.CancelOn(os.Interrupt, os.Kill, syscall.SIGTERM)
+}
+
+// CancelOn make the given signals to cancel this client.
+func (epc *EndpointsClient) CancelOn(signals ...os.Signal) {
+	go func() {
+		c := make(chan os.Signal, 1)
+		signal.Notify(c, signals...)
+
+		sig := <-c
+		klog.Info("got signal ", sig, ", stopping")
+		epc.Cancel()
+
+		sig = <-c
+		klog.Info("got signal ", sig, " again, forcing exit")
+		os.Exit(1)
+	}()
+}
+
+func (epc *EndpointsClient) Context() context.Context {
+	return epc.ctx
+}
+
+func (epc *EndpointsClient) DialContext(ctx context.Context) (conn *grpc.ClientConn, err error) {
+	klog.Info("connecting to ", epc.Target)
+
+	opts := append(
+		make([]grpc.DialOption, 0),
+		grpc.WithMaxMsgSize(epc.MaxMsgSize),
+	)
+
+	tlsCfg := epc.TLS.Config()
+	if tlsCfg == nil {
+		opts = append(opts, grpc.WithInsecure())
+	} else {
+		opts = append(opts, grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg)))
+	}
+
+	return grpc.DialContext(epc.ctx, epc.Target, opts...)
+}
+
+func (epc *EndpointsClient) Dial() (conn *grpc.ClientConn, err error) {
+	if ctxErr := epc.ctx.Err(); ctxErr == context.Canceled {
+		err = ctxErr
+		return
+	}
+
+	return epc.DialContext(epc.ctx)
+}
 ```
 
-- use the docker syntax to express binding, allowing sockets with
-  `unix:///run/kubernetes/proxy.sock`
-- may economize some syscalls for internal implementations by using
-  `google.golang.org/grpc/test/bufconn`, but that sounds like premature optimization
+... JAY/RAJAS/MIKAEL (TODO, add a good "client.Run" or "PreRun" example here ... 
 
 ### Test Plan
 
