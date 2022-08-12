@@ -186,31 +186,73 @@ demonstrate the interest in a KEP within the wider Kubernetes community.
 
 ### Goals
 
-- provide a node-level abstraction of the cluster-wide `Service` semantics through an API
-- allow easier, more stable proxy implementations that don't need updates when `Service` business
-  logic changes
-- provide a client library with minimal dependencies
-- include equivalent implementations of in-project ones (userland, iptables and ipvs)
-- create reusable library elements for some proxy logic, such as conntrack cleaning, which might be called from different proxy implementations
+- Design a new architecture for service proxy implementations
+  consisting of:
+
+    - A "core service proxy brain" daemon that models the networking statespace
+      of Kubernetes, and thus all the non-backend-technology-specific aspects of service proxying
+      (e.g., determining which endpoints should be available on a
+      given node, given traffic policy, topology, and pod readiness
+      constraints.)
+
+    - A proper subset of "proxy backends" mapping to the current upstream proxy,
+      which communicate with the "core service brain", use it's networking state space
+      to implement technical details of writing backend routing rules
+      from services to pods (eg. iptables, ipvs, Windows kernel).
+
+    - A gRPC API for optimal communication between the core logic
+      daemon and the backend implementations, which can be run in memory
+      or externalized (so that the brain can run with a one-many relationship
+      with "proxy backends"
+
+    - A set of golang packages for working with the gRPC API, which third parties
+      can use to create their own proxy backend implementations out of tree.
+
+- Provide an implementation of the core service proxy logic daemon.
+  (This implementation will be used, unmodified, by all core and
+  third-party proxy backend implementations.)
+
+- Provide a golang library that consumes the gRPC API from the above
+  daemon and exports the information to the proxy backend
+  implementation in one of two forms:
+
+    - a "full state" model, in which the library keeps track of the
+      full state of Kubernetes network statespace on this node, and
+      sends the proxy implementation a new copy of the full state on every
+      update. The library will also include a package called
+      "diffstore" that is designed to make it very easy for
+      implementations to generate incremental updates based on the
+      full state information.
+
+    - an "incremental" model, in which the library simply passes on
+      the updates from the gRPC API so the proxy implementation can
+      update its own model, which allows for similar behaviour to the
+      current upstream kube-proxy.
+
+- Provide additional reusable library elements for some proxy logic,
+  such as conntrack cleaning, which might be called from different
+  proxy implementations.
+
+- Provide new implementations of the existing "standard" proxy
+  implementations (iptables, ipvs, and Windows kernel), based on the
+  new daemon and client library. At least one of these will use the
+  "full state" model and at least one will use the "incremental" model.
+
+- Deprecate and eventually remove the existing proxy implementations
+  in `k8s.io/kubernetes`, in favor of the new implementations. Also
+  remove the associated support packages in `k8s.io/kubernetes` that
+  are only used by kube-proxy (eg, `pkg/util/ipvs`,
+  `pkg/util/conntrack`, `pkg/util/netsh`).
 
 ### Non-Goals
 
-- provide equivalent implementations of all third-party proxiers
-- force new users to run kpng in two separate daemons - this has performance benefits and is optional
-- force all proxiers to use the fullstate model: this is ideal for new implementations (easier to understand, no magic caches) but its not necessary.
+- We Won't necessarily provide bulletproof NFT, eBPF, Userspace backends with parity to the core Windows kernel, IPTAbles, IPVS implementations.  
+- We Won't Require KPNG to run in a mode where the kpng "core logic brain" is a separate process from the kpng "proxy backends", we state this as non goal because it's been a bit of a red herring debate in the past.  Although KPNG support this, it's not required. 
+- We won't Require all proxiers to use the fullstate model.  However, this is ideal for new implementations, we think because it's easier to read and understand.
 
 ## Proposal
 
-<!--
-This is where we get down to the specifics of what the proposal actually is.
-This should have enough detail that reviewers can understand exactly what
-you're proposing, but should not include things like API designs or
-implementation. The "Design Details" section below is for the real
-nitty-gritty.
--->
-
-Rewrite the kube-proxy to be a "localhost" gRPC API provider that will be accessible as usual via
-TCP (`127.0.0.1:12345`) and/or via a socket (`unix:///path/to/proxy.sock`).
+Decoupling of the KPNG core logic from networking backends, with the option to run these components in completely separate processes, or, together with the same shared memory. In cases where they are decoupled at the process level, one may, for example, use "localhost" as the gRPC API provider that will be accessible as usual via TCP (`127.0.0.1:12345`) and/or via a socket (`unix:///path/to/proxy.sock`).  In cases where they run together in memory, the same communication will happen, but the GRPC calls will just be local.
 
 - it will connect to the API server and watch resources, like the current proxy;
 - then, it will process them, applying Kubernetes specific business logic like topology computation
