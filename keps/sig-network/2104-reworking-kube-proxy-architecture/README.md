@@ -270,19 +270,21 @@ func Callback(ch <-chan *client.ServiceEndpoints) {
 	epCount := 0
 ```
 
-- Alternatively, we allow backend clients to implement "SetService" and "SetEndpoint" methods, which allow them to use a similar API structure to that of upstream Kubernetes current kernelspace Kube proxy.  An example of this is in how KPNG currently implements the iptables proxy (https://github.com/kubernetes-sigs/kpng/blob/master/backends/iptables/sink.go).
+- Alternatively, we allow backend clients to implement "SetService" and "SetEndpoint" methods, which allow them to use a similar API structure to that of upstream Kubernetes current IPTables Kube proxy.  An example of this is in how KPNG currently implements the iptables proxy (https://github.com/kubernetes-sigs/kpng/blob/master/backends/iptables/sink.go).
 
 ```
 func (s *Backend) SetService(svc *localnetv1.Service) {
 	for _, impl := range IptablesImpl {
+		// since iptables is a commonly used kubernetes proxying implementation
+		// we kept the serviceChanges cache and just wrapped it under SetService
 		impl.serviceChanges.Update(svc)
 	}
 }
-// similar functions for DeleteService, DeleteEndpoint, and so on... which are all mimicking the upstream kube proxy for parity
-// since iptables is such a universal kubernetes proxying implementation
+
 ```
-The idea is to send the full state to the client, so implementations don't have to do
-diff-processing and maintain any internal state. This should provide simple implementations,
+
+Thus, we send the full state to a backend "client", such that the backend won't have to do
+diff-processing and maintain a full cache of proxy data. This should provides simpler backend implementations,
 reliable results and still be quite optimal, since many kernel network-level objects are
 updated via atomic replace APIs. It's also a protection from slow readers, since no stream has to
 be buffered.
@@ -339,20 +341,22 @@ bogged down.
 
 #### Story 1
 
-TBD (Calico eBPF)
+As a networking technology startup I want to make my own Kube Proxy but i don't want to maintain the logic of talking to the APIServer, caching its data, or caclculating an abbreviated/proxy-focused representation of the Kubernetes networking state space.  I'd like a wholesale framework I can simply plug my logic into, and re run. 
 
 #### Story 2
 
-TBD (node-local cluster DNS provider)
+As a Kubernetes maintainer, I don't want to have to understand the internals of a networking backend in order to simulate or write core updates to the logic of the Kube Proxy locally.
+
+#### Story 3
+
+As a Kubernetes maintainer, I'd like to add new proxies to kubernetes-sigs repositories which aren't in-tree, but are community maintained and developed/licensed according to CNCF standards
+
+#### Story 4
+
+As an end user, I'd like to be able to easily test a Kubernetes backend's networking logic without plugging it into a real Kubernetes cluster, or maybe even use it to write networking rules that aren't directly provided by the Kubernetes API.
 
 ### Notes/Constraints/Caveats (Optional)
 
-<!--
-What are the caveats to the proposal?
-What are some important details that didn't come across above?
-Go in to as much detail as necessary here.
-This might be a good place to talk about core concepts and how they relate.
--->
 
 - sending the full-state could be resource consuming on big clusters, but it should still be O(1) to
   the actual kernel definitions (the complexity of what the node has to handle cannot be reduced
@@ -360,31 +364,18 @@ This might be a good place to talk about core concepts and how they relate.
 
 ### Risks and Mitigations
 
-<!--
-What are the risks of this proposal, and how do we mitigate? Think broadly.
-For example, consider both security and how this will impact the larger
-Kubernetes ecosystem.
+- There's a performance risk when it comes to large scales, we've proposed a new issue https://github.com/kubernetes-sigs/kpng/issues/325 as a community wide, open scale testing session on a large cluster that we can run manually to inspect in real time and see any major deltas.
 
-How will security be reviewed, and by whom?
+- There may be magic functionality that is unpublished in the kube proxy that we dont know about which we lose when doing this.  
 
-How will UX be reviewed, and by whom?
-
-Consider including folks who also work outside the SIG or subproject.
--->
+Mitigations are - falling back to the in-tree proxy, or simply titrating logic over peice by peice if we find holes .  We don't think there are many of these thoush because there are 100s of networking tests, many of which test specific items like udp proxying, avoiding blackholes, service updating, scaling of pods, local routing logic for things like service topologies, and so on.
 
 ## Design Details
-
-<!--
-This section should contain enough information that the specifics of your
-change are understandable. This may include API specs (though not always
-required) or even code snippets. If there's any ambiguity about HOW your
-proposal will be implemented, this is the place to discuss them.
--->
 
 A [draft implementation] exists and some [performance testing] has been done.
 
 [draft implementation]: https://github.com/kubernetes-sigs/kpng/
-[performance testing]: https://github.com/mcluseau/kube-proxy2/blob/master/doc/proposal.md
+[performance testing]: https://github.com/kubernetes-sigs/kpng/blob/master/doc/proposal.md
 
 The watchable API will be a long polling, taking a "last known state info" and returning a stream of
 objects. 
