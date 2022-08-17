@@ -62,13 +62,22 @@ SIG Architecture for cross-cutting KEPs).
 # KEP-2104: rework kube-proxy architecture
 # UPDATE
 
-As of 4/16/2022
+## As of 5/17/2022 
+
+- Backends have been expanded to include windows user-space and a 
+POC for an EBPF backend.
+- KEP is still a WIP with development being the main focus of the group 
+
+
+## As of 4/16/2022
 - the KPNG subproject has a working implementation of much of this proposal: https://github.com/kubernetes-sigs/kpng
 - this implementation includes windows, ipvs, iptables, nft, and userspace based linux proxies
   - third parties have also published external KPNG backends validating this implementation, such as https://kubernetes.io/blog/2021/10/18/use-kpng-to-write-specialized-kube-proxiers/ 
 - the KPNG project meetings are published at https://github.com/kubernetes/community/tree/master/sig-network 
 - For the backends implemented we have conformance and sig-network tests which run, which are in generally good health with exceptions of a few corner cases and bugs which are being actively worked on by the community
 - The status of this KEP hasnt been 100% maintained because our efforts have diverted to getting a concrete prototype working, we encourage others to help us complete this KEP as well as to finish the other broad work associated with rearchitecting the kube-proxy  
+
+# Index
 <!--
 A table of contents is helpful for quickly jumping to sections of a KEP and for
 highlighting any additional information provided beyond the standard KEP
@@ -158,14 +167,14 @@ Items marked with (R) are required *prior to targeting to a milestone / release*
 ## Summary
 
 At the beginning, `kube-proxy` was designed to handle the translation of Service objects to OS-level
-resources.  Implementations have been userland, then iptables, and now ipvs. With the growth of the
+resources.  Implementations included userspace, followed by iptables, and ipvs. With the growth of the
 Kubernetes project, more implementations came to life, for instance with eBPF, and often in relation
 to other goals (Calico to manage the network overlay, Cilium to manage app-level security, metallb
 to provide an external LB for bare-metal clusters, etc).
 
 Along this cambrian explosion of third-party software, the Service object itself received new
 concepts to improve the abstraction, for instance to express topology. Thus, third-party
-implementation are expected to update and become more complex over time, even if their core doesn't
+implementations are expected to update and become more complex over time, even if their core doesn't
 change (ie, the eBPF translation layer is not affected).
 
 This KEP is born from the conviction that more decoupling of the Service object and the actual
@@ -205,7 +214,7 @@ demonstrate the interest in a KEP within the wider Kubernetes community.
       or externalized (so that the brain can run with a one-many relationship
       with "proxy backends"
 
-    - A set of golang packages for working with the gRPC API, which third parties
+    - A set of golang packages for working with the gRPC API, which   third parties
       can use to create their own proxy backend implementations out of tree.
 
 - Provide an implementation of the core service proxy logic daemon.
@@ -229,7 +238,7 @@ demonstrate the interest in a KEP within the wider Kubernetes community.
       update its own model, which allows for similar behaviour to the
       current upstream kube-proxy.
 
-- Provide additional reusable library elements for some proxy logic,
+- Provide additional reusable library elements for some shared backend logic,
   such as conntrack cleaning, which might be called from different
   proxy implementations.
 
@@ -264,13 +273,14 @@ We assume that some backend's will benefit from running the "core" Kubernetes lo
 In this implementation, we either: 
 - send the *full state*  of the kubernetes networking state-space to a client, every time anything needs to change.  Since this is done over GRPC or in memory, the bandwidth costs are low (anecdotally this has been measured, and it works for 1000s of services and pods - we can attach specific results to this KEP as needed).  An example of this can be seen in the ebpf and nft proxies in the KPNG project (https://github.com/kubernetes-sigs/kpng/blob/master/backends/nft/nft.go).  Some initial performance data is here https://github.com/kubernetes-sigs/kpng/blob/master/doc/proposal.md.
 ```
-// the entire statestpace of the Kubernetes networking model is embedded in this struct
-func Callback(ch <-chan *client.ServiceEndpoints) {
-	svcCount := 0
-	epCount := 0
+// the entire statespace of the Kubernetes networking model is embedded in this struct
+type ServiceEndpoints struct {
+	Service   *localnetv1.Service
+	Endpoints []*localnetv1.Endpoint
+}
 ```
 
-- Alternatively, we allow backend clients to implement "SetService" and "SetEndpoint" methods, which allow them to use a similar API structure to that of upstream Kubernetes current IPTables Kube proxy.  An example of this is in how KPNG currently implements the iptables proxy (https://github.com/kubernetes-sigs/kpng/blob/master/backends/iptables/sink.go).
+- send the full state but filter, on the client side, to *incremetal state* of the kubernetes networking state-space whenever an event occurs. We then allow backend clients to implement "SetService" and "SetEndpoint" methods, which allow them to use a similar API structure to that of upstream Kubernetes current IPTables Kube-proxy.  An example of this is in how KPNG currently implements the iptables proxy (https://github.com/kubernetes-sigs/kpng/blob/master/backends/iptables/sink.go).
 
 ```
 func (s *Backend) SetService(svc *localnetv1.Service) {
@@ -296,7 +306,7 @@ showed a frequency reduction of change events by 2 orders of magnitude.
 
 #### How we calculate deltas: The DiffStore
 
-One fundamentally important part of building a serviec proxy in kubernetes is calculating "diffs", for example, if at time 1 we have
+One fundamentally important part of building a service proxy in kubernetes is calculating "diffs", for example, if at time 1 we have
 
 ```
 Service A -> Pod A1 , Pod A2
@@ -310,7 +320,7 @@ Service B -> Pod B1, Pod B2
 
 We need to add *One* new networking rule: the fact that there is service B which can be loadbalanced to pod B2.  Any other networking rules already exist and need not be processed (this is more true for some backends then others, i.e. for IPVS or the windows kernel, which don't require rewriting of all rules every time there's a change).  
 
-KPNG provides a "DiffStore", which allows arbitrary, generic go objects to be diffed in memory by a backend.  This can be viewed at https://github.com/kubernetes-sigs/kpng/tree/master/client/diffstore.    The overall usage of this store is relatively intuitive: Write to it continuously, and only register "differences" when looking at the Diffs.  The "Reset()" function causes the second "wave" in a series of writes to take place, such that a subsequent call to see the diff at a later time will reveal differences between the first and second series of writes.  Note that the `Get` call here will write a key if empty.
+KPNG provides a "DiffStore" library, which allows arbitrary, generic go objects to be diffed in memory by a backend.  This can be viewed at https://github.com/kubernetes-sigs/kpng/tree/master/client/diffstore.  The overall usage of this store is relatively intuitive: Write to it continuously, and only register "differences" when looking at the Diffs.  The "Reset()" function causes the second "wave" in a series of writes to take place, such that a subsequent call to see the diff at a later time will reveal differences between the first and second series of writes.  Note that the `Get` call here will write a key if empty.
 
 ```
 func ExampleStore() {
@@ -341,11 +351,11 @@ bogged down.
 
 #### Story 1
 
-As a networking technology startup I want to make my own Kube Proxy but i don't want to maintain the logic of talking to the APIServer, caching its data, or caclculating an abbreviated/proxy-focused representation of the Kubernetes networking state space.  I'd like a wholesale framework I can simply plug my logic into, and re run. 
+As a networking technology startup I want to make my own kube-proxy implementation but don't want to maintain the logic of talking to the APIServer, caching its data, or calculating an abbreviated/proxy-focused representation of the Kubernetes networking state space.  I'd like a wholesale framework I can simply plug my logic into. 
 
 #### Story 2
 
-As a Kubernetes maintainer, I don't want to have to understand the internals of a networking backend in order to simulate or write core updates to the logic of the Kube Proxy locally.
+As a Kubernetes maintainer, I don't want to have to understand the internals of a networking backend in order to simulate or write core updates to the logic of the kube-proxy locally.
 
 #### Story 3
 
@@ -357,7 +367,6 @@ As an end user, I'd like to be able to easily test a Kubernetes backend's networ
 
 ### Notes/Constraints/Caveats (Optional)
 
-
 - sending the full-state could be resource consuming on big clusters, but it should still be O(1) to
   the actual kernel definitions (the complexity of what the node has to handle cannot be reduced
   without losing functionality or correctness).
@@ -366,9 +375,9 @@ As an end user, I'd like to be able to easily test a Kubernetes backend's networ
 
 - There's a performance risk when it comes to large scales, we've proposed a new issue https://github.com/kubernetes-sigs/kpng/issues/325 as a community wide, open scale testing session on a large cluster that we can run manually to inspect in real time and see any major deltas.
 
-- There may be magic functionality that is unpublished in the kube proxy that we dont know about which we lose when doing this.  
+- There may be magic functionality that is unpublished in the kube-proxy that we dont know about which we lose when doing this.  
 
-Mitigations are - falling back to the in-tree proxy, or simply titrating logic over peice by peice if we find holes .  We don't think there are many of these thoush because there are 100s of networking tests, many of which test specific items like udp proxying, avoiding blackholes, service updating, scaling of pods, local routing logic for things like service topologies, and so on.
+Mitigations are - falling back to the in-tree proxy, or simply titrating logic over piece by piece if we find holes .  We don't think there are many of these those because there are 100s of networking tests, many of which test specific items like udp proxying, avoiding blackholes, service updating, scaling of pods, local routing logic for things like service topologies, and so on.
 
 ## Design Details
 
@@ -377,12 +386,14 @@ A [draft implementation] exists and some [performance testing] has been done.
 [draft implementation]: https://github.com/kubernetes-sigs/kpng/
 [performance testing]: https://github.com/kubernetes-sigs/kpng/blob/master/doc/proposal.md
 
-The watchable API will be a long polling, taking a "last known state info" and returning a stream of
+### API
+
+The watchable API will be long polling, taking a "last known state info" and returning a stream of
 objects. 
 
 Proposed definition is found here: https://github.com/kubernetes-sigs/kpng/blob/master/api/localnetv1/services.proto
 
-The main types are:
+The main types composing the GRPC API are:
 ```
 message Service
 message IPFilter
@@ -398,7 +409,13 @@ message NodeInfo
 message Node
 ```
 
-When the proxy starts, it will generate a random InstanceID, and have Rev at 0. So, a client
+### Server
+
+The KPNG server is responsible for watching the Kubernetes API for 
+changes to Service and Endpoint objects and translating to listening 
+clients via the aforementioned API.
+
+When the proxy server starts, it will generate a random InstanceID, and have Rev at 0. So, a client
 (re)connecting will get the new state either after a proxy restart or when an actual change occurs.
 The proxy will never send a partial state, only full states. This means it waits to have all its
 Kubernetes watchers sync'ed before going to Rev 1.
@@ -406,6 +423,9 @@ Kubernetes watchers sync'ed before going to Rev 1.
 The first OpItem in the stream will be the state info required for the next polling call, and any
 subsequent item will be an actual state object. The stream is closed when the full state has been
 sent.
+
+
+### Client
 
 The client library abstracts those details away and provides the full state after each change, and
 includes a default Run function, setting up default flags, parsing them and running the client,
@@ -437,7 +457,7 @@ func printState(items []*localnetv1.ServiceEndpoints) {
 
 The currently proposed interface for the lower-level client is as follows:
 
-```godoc
+```golang
 package client // import "github.com/mcluseau/kube-proxy2/pkg/client"
 
 type EndpointsClient struct {
@@ -573,6 +593,165 @@ func (epc *EndpointsClient) Dial() (conn *grpc.ClientConn, err error) {
 ```
 
 ... JAY/RAJAS/MIKAEL (TODO, add a good "client.Run" or "PreRun" example here ... 
+
+### Implementations 
+
+The backends make use of the provided client infrastructure to actually program 
+networking rules into the kernel datapath. In KPNG the backends interact with the 
+client library by implementing the sink interface.
+
+```golang
+type Sink interface {
+	// Setup is called once, when the job starts
+	Setup()
+
+	// WaitRequest waits for the next diff request, returning the requested node name. If an error is returned, it will cancel the job.
+	WaitRequest() (nodeName string, err error)
+
+	// Reset the state of the Sink (ie: when the client is disconnected and reconnects)
+	Reset()
+
+	localnetv1.OpSink
+}
+```
+
+The sink interface currently is implemented by two different packages, the `filterreset` 
+package, which provides methods to give incremental change data to the backends, or 
+the `fullstate` package, which simply passes the fullstate of the current Services and Endpoints to the backend.
+
+In the scope of kubernetes it may be easier to think of the `fullstate` library 
+as the package used by implementations who wish to follow level driven controller
+constructs, and the `filterreset` library as the package used by implemenataions 
+who wish to follow event driven controller constructs.  
+
+#### Fullstate logic 
+
+The fullstate library implements the `sink` interface as follows: 
+
+```golang
+// EndpointsClient is a simple client to kube-proxy's Endpoints API.
+type Sink struct {
+	Config    *localsink.Config
+	Callback  Callback
+	SetupFunc Setup
+
+	data *btree.BTree
+}
+```
+
+The POC EBPF implementation is a good example of utilizing the fullstate package 
+to interact with the KPNG shared client. Specifially it implements two main methods 
+the fullstate
+sink's `Callback` and `Setup` functions.  The setup function is called once upon KPNG 
+client startup, while the callback function is called anytime the state of 
+kubernetes services and endpoints changes.
+
+```golang 
+func (s *backend) Setup() {
+	ebc = ebpfSetup()
+	klog.Infof("Loading ebpf maps and program %+v", ebc)
+}
+
+func (b *backend) Sync() { /* no-op */ }
+
+func (b *backend) Sink() localsink.Sink {
+	sink := fullstate.New(&b.cfg)
+
+	sink.Callback = fullstatepipe.New(fullstatepipe.ParallelSendSequenceClose,
+		ebc.Callback,
+	).Callback
+
+	sink.SetupFunc = b.Setup
+
+	return sink
+}
+```
+
+The `ebc.Callback`(ebpf controller Callback) function resembles the following: 
+
+```golang 
+func (ebc *ebpfController) Callback(ch <-chan *client.ServiceEndpoints) {
+	// Reset the diffstore before syncing
+	ebc.svcMap.Reset(lightdiffstore.ItemDeleted)
+
+	// Populate internal cache based on incoming fullstate information
+	for serviceEndpoints := range ch {
+		klog.V(5).Infof("Iterating fullstate channel, got: %+v", serviceEndpoints)
+
+  ...
+  // Abbrev. BUSINESS LOGIC
+  ...
+
+	// Reconcile what we have in ebc.svcInfo to internal cache and ebpf maps
+	// The diffstore will let us know if anything changed or was deleted.
+	if len(ebc.svcMap.Updated()) != 0 || len(ebc.svcMap.Deleted()) != 0 {
+		ebc.Sync()
+	}
+}
+```
+
+And is what is responsible for programing the actual datapath rules to handle 
+service proxying.
+
+#### Filterreset logic 
+
+The `filterreset` library implements the `sink` interface as follows: 
+
+```golang
+
+type Sink struct {
+	sink      localsink.Sink
+	filtering bool
+	memory    map[string]memItem
+	seen      map[string]bool
+}
+```
+
+This definition allows the implementations to consruct their own custom sinks 
+(see the `sink` field).  A great example of 
+utilizing the `filterreset` library can be found in the iptables implementation. 
+
+```golang
+func (s *Backend) Sink() localsink.Sink {
+	return filterreset.New(pipe.New(decoder.New(s), decoder.New(conntrack.NewSink())))
+}
+```
+
+Here the bakend initializes a new filterreset sink which receives events from the 
+shared client via four main methods `SetService`, `DeletService`, `SetEndpoint`, 
+`DeleteEndpoint`. 
+
+```golang
+func (s *Backend) SetService(svc *localnetv1.Service) {
+	for _, impl := range IptablesImpl {
+		impl.serviceChanges.Update(svc)
+	}
+}
+
+func (s *Backend) DeleteService(namespace, name string) {
+	for _, impl := range IptablesImpl {
+		impl.serviceChanges.Delete(namespace, name)
+	}
+}
+
+func (s *Backend) SetEndpoint(namespace, serviceName, key string, endpoint *localnetv1.Endpoint) {
+	for _, impl := range IptablesImpl {
+		impl.endpointsChanges.EndpointUpdate(namespace, serviceName, key, endpoint)
+	}
+
+}
+
+func (s *Backend) DeleteEndpoint(namespace, serviceName, key string) {
+	for _, impl := range IptablesImpl {
+		impl.endpointsChanges.EndpointUpdate(namespace, serviceName, key, nil)
+	}
+}
+```
+
+These methods are ultimately where the iptables rules are programed by
+the backend. The main use case for such a sink design was to more easly integrate  
+with existing kube proxy backends (iptables, ipvs, etc) which already relied 
+on such methods. 
 
 ### Test Plan
 
