@@ -285,10 +285,47 @@ Kubernetes networking data is being polled from the APIServer.
 
 ## Implementation History
 
+Relevant Links:
+
 - [Add kep to move kubeproxy out of tree (to staging)](https://github.com/kubernetes/enhancements/pull/2635)
 - ["Move kube-proxy networking utilities to staging"](https://github.com/kubernetes/kubernetes/pull/112886)
 - [Import BoundedFrequencyRunner from k8s.io/kubernetes](https://github.com/kubernetes/utils/pull/165)
 - ["Librarification" PR into KPNG](https://github.com/kubernetes-sigs/kpng/pull/389).
+- [Early request to move `pkg/proxy` to `k8s.io/kube-proxy`](https://github.com/kubernetes/kubernetes/issues/92369)
+
+How we got here (for folks new to the conversation):
+
+1. **The initial KPNG KEP** -> https://github.com/kubernetes/enhancements/pull/2094
+
+It describes KPNG as it stands today, a great tool which essentially solves two major problems
+
+ - Complex proxy deployment scenarios
+ - Makes it simple to write new service proxy backends
+ 
+However **today**(we could totally change this) these features are tightly coupled, i.e you need to buy into the GRPC API (which solves complex deployment) in order to get the benefits which make writing new  backends easier.
+
+On this Kep wayyyy back in 2021 :) @thockin pushed hard for KPNG to move towards a library (see [this comment](https://github.com/kubernetes/enhancements/pull/2094#issuecomment-757063785)) and then again this year in a nice [slide dec]( https://docs.google.com/presentation/d/1Y-tZ4fFC9L2NvtBeiIXD1MiJ0ieg_zg4Q6SlFmIax8w/edit?usp=sharing&resourcekey=0-SFhIGTpnJT5fo6ZSzQC57g) around Kubecon NA.
+
+I initially did a poc of moving KPNG towards the comment's/sildeshow's suggested design in https://github.com/kubernetes-sigs/kpng/pull/389 and now based on @jayunit100's comment they're doing something similar for the windows bits. 
+
+Regardless out of all this work on KPNG and the KEP #2094  we never really figured out one of the most crucial questions... i.e
+
+**Should any of the work ever get back in-tree and how does it play into the future of the existing kube-proxies.**
+
+However, we **did** mostly agree that KPNG is wayy too big to ever make it back into tree as it stands today, so I'll leave it at that for now.  
+
+Next came the spinoff lib KEP looking at how we could create such a library -> 
+
+2. https://github.com/kubernetes/enhancements/pull/3649 
+
+In this KEP we tried to ONLY target building exactly what @thockin an others were after with a nice library which focused on making backends easier to write. 
+
+Also in order to avoid duplicating code maintenance efforts and functionality bits we began [talking and thinking about actually using it in the existing proxies](https://github.com/kubernetes/enhancements/pull/3649#discussion_r1034967873) which began to answer that initial unanswered question.  
+
+However that involved possibly jeopardizing the stability of the existing super stable proxies so let's make sure the transition is super slow.......enter this KEP
+
+3.  https://github.com/kubernetes/enhancements/pull/3788 (read the KEP) 
+ A tiny step forward focusing on simply making the stable functionality we already have in our proxies useable for others. 
 
 ## Drawbacks
 
